@@ -40,6 +40,5 @@ shinyUI(fluidPage( theme = shinytheme("cerulean"),
                            tabPanel("Forecast error boxplot and density plot", plotOutput("forecasts")),
                            tabPanel(h3("Forecast future - One week"), title = uiOutput("titleforefuture")),
                            tabPanel("Forecast future - One week", div(DT::dataTableOutput("forecastfuture"), value = "title"), style = "font-size:150%")
-                           #tabPanel("test", div(DT::dataTableOutput("test"), value = "title"), style = "font-size:150%")
                        ))
 ))
