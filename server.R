@@ -1,4 +1,5 @@
 
+
 library(shiny)
 library(partykit)
 library(ggplot2)
@@ -6,14 +7,11 @@ library(ggparty)
 library(quantmod)
 library(dplyr)
 library(reshape2)
-library(plyr)
-library(dtwclust)
 library(DT)
-library(strucchange)
-library(data.table)
 library(tidyverse)
 library(lubridate)
-
+source('olsfc.single.R', local = TRUE)
+source('smatrix.R', local = TRUE)
 
 shinyServer(function(input, output) {
   df_products_upload <- reactive({
@@ -21,7 +19,7 @@ shinyServer(function(input, output) {
     if (is.null(inFile))
       return(NULL)
     confirmed.Taiwan <- read.csv(inFile$datapath, header = TRUE)
-
+    
     confirmed.Taiwan <- confirmed.Taiwan[ ave(confirmed.Taiwan$cases != 0,confirmed.Taiwan$city, FUN = any), ]
     # Series structures
     nrows <- nrow(confirmed.Taiwan)
@@ -32,31 +30,31 @@ shinyServer(function(input, output) {
     confirmed.Taiwan <- confirmed.Taiwan %>%
       mutate(Date = rep(rep(ymd("2021-01-01") + 0:(serieslength - 1)),nseries))
     ## trend and season added
-    confirmed.Taiwan <- group_by(confirmed.Taiwan, Date) %>%
-      mutate(cases = ts(confirmed.Taiwan$cases, frequency = frequency)) %>%
-      mutate(season = factor(cycle(cases)), trend = rep( 1:serieslength, nseries ))
-
-      ## Normalizing the series
-      confirmed.Taiwan <- confirmed.Taiwan %>%
-      ddply("city", transform, Confirmed.std = scale(cases)) %>%
-      ddply("city", transform, Confirmed.sd = sd(cases)) %>%
-      ddply("city", transform, Confirmed.mean = mean(cases))
-     confirmed.Taiwan$mean<- mean(confirmed.Taiwan$cases)
-     confirmed.Taiwan$sd <- sd(confirmed.Taiwan$cases)
+    confirmed.Taiwan <- dplyr::group_by(confirmed.Taiwan, Date) %>%
+      plyr::mutate(cases = ts(confirmed.Taiwan$cases, frequency = frequency)) %>%
+      plyr::mutate(season = factor(cycle(cases)), trend = rep(1:serieslength, nseries))
     
-     ## category columns
-     colsfac <- c('region', 'imported', 'administrative', 'airport')
-     confirmed.Taiwan <- confirmed.Taiwan %>% mutate_at(colsfac, list(~factor(.)))
-
+    ## Normalizing the series 
+    confirmed.Taiwan <- confirmed.Taiwan %>%
+      plyr::ddply("city", transform, Confirmed.std = scale(cases)) %>%
+      plyr::ddply("city", transform, Confirmed.sd = sd(cases)) %>%
+      plyr::ddply("city", transform, Confirmed.mean = mean(cases))
+    confirmed.Taiwan$mean<- mean(confirmed.Taiwan$cases)
+    confirmed.Taiwan$sd <- sd(confirmed.Taiwan$cases)
+    
+    ## category columns
+    colsfac <- c('region', 'imported', 'administrative', 'airport')
+    confirmed.Taiwan <- confirmed.Taiwan %>% mutate_at(colsfac, list(~factor(.)))
+    
     ## lags added
-     category_sort <- sort(unique(confirmed.Taiwan$city))
-     lag_making <- list()
-     for (i in seq_along(category_sort))
-       lag_making[[i]] <-
-       Lag(confirmed.Taiwan$Confirmed.std[confirmed.Taiwan$city == category_sort[i]], 1:frequency)
-     lag_making <- do.call(rbind, lag_making)
-     confirmed.Taiwan <- confirmed.Taiwan[order(confirmed.Taiwan$city), ]
-     confirmed.Taiwan <- cbind(confirmed.Taiwan, lag_making)
+    category_sort <- sort(unique(confirmed.Taiwan$city))
+    lag_making <- list()
+    for (i in seq_along(category_sort))
+      lag_making[[i]] <-
+      quantmod::Lag(confirmed.Taiwan$Confirmed.std[confirmed.Taiwan$city == category_sort[i]], 1:7)
+    lag_making <- do.call(rbind, lag_making)
+    confirmed.Taiwan <- confirmed.Taiwan[order(confirmed.Taiwan$city), ]
+    confirmed.Taiwan <- cbind(confirmed.Taiwan, lag_making)
     return(confirmed.Taiwan)
   }) 
   
@@ -64,17 +62,17 @@ shinyServer(function(input, output) {
     if (is.null(df_products_upload()))
       return(NULL)
     dattr <- df_products_upload() %>%
-       dplyr::filter(Date <=  ymd("2021-06-03"))
-     return(dattr)
-   })
-   dattest<- reactive({
-     if (is.null(df_products_upload()))
-       return(NULL)
-     datte <- df_products_upload()  %>%
-       dplyr::filter(Date >  ymd("2021-06-03"))
-     return(datte)
-   })
-
+      dplyr::filter(Date <=  ymd("2021-06-03"))
+    return(dattr)
+  })
+  dattest<- reactive({
+    if (is.null(df_products_upload()))
+      return(NULL)
+    datte <- df_products_upload()  %>%
+      dplyr::filter(Date >  ymd("2021-06-03"))
+    return(datte)
+  })
+  
   fit <- reactive({
     if (is.null(dattrain()))
       return(NULL)
@@ -82,7 +80,7 @@ shinyServer(function(input, output) {
     var1 <- as.vector(unlist(var))
     form <- "Confirmed.std ~ trend +  season"
     for (i in 1:frequency)
-    form <- paste(form , " + ", paste("Lag", i, sep = '.'))
+      form <- paste(form , " + ", paste("Lag", i, sep = '.'))
     form <- paste(form , '|')
     for (i in 1:(length(var1)-1))
       form <- paste0(form, var1[i], " + ")
@@ -97,6 +95,7 @@ shinyServer(function(input, output) {
     MOBtree <- mob( formula, data = dattrain() , fit = linear, control =
                       mob_control(prune = input$Prune,  maxdepth = depth, alpha = 0.01))
   })
+  # 
   fit2 <- reactive({
     if (is.null(dattrain()))
       return(NULL)
@@ -123,7 +122,7 @@ shinyServer(function(input, output) {
         Horizon = paste0("h=",seq(h)),
         Series = colnames(train.cluster.single[[i]]),
         Method = c('OLS.single'))
-
+      
       for(j in seq(NCOL(train.cluster.single[[i]]))){
         fc.single[,j,'OLS.single'] <- olsfc.single(train.cluster.single[[i]][,j], h, frequency ,maxlag = frequency, fitt[[i]])
       }
@@ -135,7 +134,7 @@ shinyServer(function(input, output) {
       tests1 <-  rep(test.cluster[[i]], each = h)
       tests[[length(tests)+1]] <- tests1
     }
-
+    
     fc.single <- list()
     for (i in seq(fc.single.list)) {
       res.value <- data.frame('fc' = ((reshape2::melt(fc.single.list[[i]])$value*tests[[i]]$Confirmed.sd) + (tests[[i]]$Confirmed.mean)))
@@ -149,7 +148,7 @@ shinyServer(function(input, output) {
     fc.single $Method <- 'OLS.single'
     fc.single <- as.data.frame(fc.single)
   })
-  ## title
+  # ## title
   output$titleMSE = renderText({})
   ## MSE for different MOB depth
   output$MSE <- renderTable({
@@ -158,7 +157,7 @@ shinyServer(function(input, output) {
     x <- na.omit(dattrain())$Confirmed.std
     round(mean((x - predict(fit(), type = "response")) ^ 2), digits = 4)
   }, colnames = FALSE, digits = 4 ,  align = "l")
-  ## title
+  # # ## title
   output$titleHeatmap1 = renderText({})
   ## MOB and heatmap plotting
   output$MOBTree1 <- renderPlot({
@@ -217,7 +216,7 @@ shinyServer(function(input, output) {
                            list(size = 12),
                            list(size = 2)
           ),
-        # only inner nodes
+          # only inner nodes
           ids = "inner") +
         geom_node_info()
       ## printing both plots
@@ -225,11 +224,11 @@ shinyServer(function(input, output) {
       print(heatmap.plot, vp = viewport(x = 0.25, y = 0.5, width = 0.5, height = 1))
       print(tree.plot, vp = viewport(x = 0.75, y = 0.51, width = 0.5, height = 1))
     }
-
+    
   })
-
+  
   output$titleHeatmap2 = renderText({})
-  ## heatmap by day of week
+  # ## heatmap by day of week
   output$MOBTree2 <- renderPlot({
     if (is.null(dattrain()))
       return(NULL)
@@ -267,7 +266,7 @@ shinyServer(function(input, output) {
       order.day.confirmed.Taiwan.train[[i]]$cluster <- i
     }
     final.order.day.confirmed.Taiwan.train <- do.call("rbind", order.day.confirmed.Taiwan.train)
-
+    
     heatmap.plot2 <- ggplot(final.order.day.confirmed.Taiwan.train ,
                             aes(y = ID, x = variable, fill = value)) +
       geom_raster() +
@@ -304,7 +303,7 @@ shinyServer(function(input, output) {
                            list(size = 12),
                            list(size = 2)
           ),
-      # only inner nodes
+          # only inner nodes
           ids = "inner") +
         geom_node_info()
       # printing both plots
@@ -326,7 +325,7 @@ shinyServer(function(input, output) {
     }
     confirmed.Taiwan2 <- do.call("rbind", split.confirmed.Taiwan.train)
     if ( input$Depth == 1 ){
-      ggplot(data = confirmed.Taiwan2, aes( x = confirmed.Taiwan2$trend, 
+      ggplot(data = confirmed.Taiwan2, aes( x = confirmed.Taiwan2$trend,
                                             y = (confirmed.Taiwan2$cases - min(confirmed.Taiwan2$cases))/(max(confirmed.Taiwan2$cases)- min(confirmed.Taiwan2$cases)),
                                             group = confirmed.Taiwan2$city)) +
         geom_line(size = 1, col = "gray") +
@@ -337,7 +336,7 @@ shinyServer(function(input, output) {
               axis.text.y=element_text(size = 10), axis.text.x=element_text(size = 10))
     }
     else{
-      ggplot(data = confirmed.Taiwan2, aes( x = confirmed.Taiwan2$trend, 
+      ggplot(data = confirmed.Taiwan2, aes( x = confirmed.Taiwan2$trend,
                                             y = (confirmed.Taiwan2$cases - min(confirmed.Taiwan2$cases))/(max(confirmed.Taiwan2$cases)- min(confirmed.Taiwan2$cases)),
                                             group = confirmed.Taiwan2$city)) +
         geom_line(size = 1, col = "gray") +
@@ -392,7 +391,6 @@ shinyServer(function(input, output) {
   output$info <- renderText({
     paste0("y=", input$plot_click$y)
   })
-  ## title
   output$titleline = renderText({})
   output$forecasts <- renderPlot({
     if (is.null(dattrain()))
@@ -412,7 +410,7 @@ shinyServer(function(input, output) {
     }
     dataset <- fit2() %>%
       filter(Horizon == 'h=1')
-
+    
     forecast_plot1 <- ggplot(data = dataset, aes(x = Method, y = Error, fill = Method)) +
       stat_summary(fun.data = boxplot.stat, geom = "boxplot", alpha = 0.5) +
       scale_fill_grey() +
@@ -427,7 +425,7 @@ shinyServer(function(input, output) {
         axis.title.x = element_blank(),
         legend.position = "none"
       )
-
+    
     forecast_plot2 <-  ggplot(data = dataset, aes(x = Error, color = Method)) +
       geom_line(stat = "density", size = 1) +
       ylab("Density") + xlab("")+
@@ -446,8 +444,10 @@ shinyServer(function(input, output) {
     grid.newpage()
     print(forecast_plot1, vp = viewport(x = 0.25, y = 0.5, width = 0.5, height =1))
     print(forecast_plot2, vp = viewport(x = 0.75, y = 0.5, width = 0.5, height = 1.1))
-
+    
   })
+  ## title
+  
   output$titleforefuture = renderText({})
   output$forecastfuture <- DT::renderDataTable({
     if (is.null(dattrain()))
@@ -455,14 +455,14 @@ shinyServer(function(input, output) {
     dataset1 <- fit2() %>%
       filter(Horizon != 'h=1') %>%
       select(fc, Series)
-
+    
     dataset2 <- as.data.frame(matrix(round(dataset1$fc), nrow = 7))
     mah <- fit2() %>%
       filter(Horizon == 'h=1') %>%
       select(Series)
-
+    
     colnames(dataset2) <- as.vector(mah$Series)
-
+    
     dataset2 <- cbind.data.frame('Horizon' = c(1:7), dataset2)
     DT::datatable(dataset2, class = 'cell-border stripe', rownames = FALSE,
                   extensions = c('Buttons', 'Scroller'), options = list(scrollY = 300,
@@ -472,7 +472,7 @@ shinyServer(function(input, output) {
                                                                         buttons = list('excel'),
                                                                         dom = 'lBfrtip',
                                                                         fixedColumns = TRUE))
-
+    
   })
   # screenshot
   observeEvent(input$go, {
