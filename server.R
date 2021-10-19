@@ -11,7 +11,6 @@ library(DT)
 library(tidyverse)
 library(lubridate)
 source('olsfc.single.R', local = TRUE)
-source('smatrix.R', local = TRUE)
 
 shinyServer(function(input, output) {
   df_products_upload <- reactive({
@@ -62,14 +61,14 @@ shinyServer(function(input, output) {
     if (is.null(df_products_upload()))
       return(NULL)
     dattr <- df_products_upload() %>%
-      dplyr::filter(Date <=  ymd("2021-06-03"))
+      dplyr::filter(Date <=  ymd("2021-07-24"))
     return(dattr)
   })
   dattest<- reactive({
     if (is.null(df_products_upload()))
       return(NULL)
     datte <- df_products_upload()  %>%
-      dplyr::filter(Date >  ymd("2021-06-03"))
+      dplyr::filter(Date >  ymd("2021-07-24"))
     return(datte)
   })
   
@@ -111,10 +110,10 @@ shinyServer(function(input, output) {
       fitt[[i]] <- lm(form, data = train.cluster[[i]])
     train.cluster.single <- list()
     for(i in 1:length(train.cluster)){
-      train.cluster.single[[i]] <- matrix(train.cluster[[i]]$Confirmed.std, ncol = nrow(train.cluster [[i]])/(serieslength - frequency - 1), nrow = (serieslength - frequency - 1))
+      train.cluster.single[[i]] <- matrix(train.cluster[[i]]$Confirmed.std, ncol = nrow(train.cluster [[i]])/(serieslength - frequency - 7), nrow = (serieslength - frequency - 7))
       colnames(train.cluster.single[[i]]) <- unique(train.cluster[[i]]$city)
     }
-    h <- 8
+    h <- 14
     fc.single.list <- list()
     for(i in 1:length(train.cluster)){
       fc.single <- array(NA, c(Horizon = h, Series = NCOL(train.cluster.single[[i]]),Method = 1))
@@ -169,11 +168,11 @@ shinyServer(function(input, output) {
     }
     ## reordering series based on the series values
     order.data <- function(df) {
-      new_matrix <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (serieslength - frequency - 1), ncol = length(unique(df$city)))))
+      new_matrix <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (serieslength - frequency - 7), ncol = length(unique(df$city)))))
       new_matrix <- cbind.data.frame("ID" = paste('s', 1:nrow(new_matrix), sep = ''), new_matrix)
-      colnames(new_matrix) <- c("ID", paste('t', 1:(serieslength - frequency - 1), sep = ''))
+      colnames(new_matrix) <- c("ID", paste('t', 1:(serieslength - frequency - 7), sep = ''))
       new_matrix.melt <-reshape2:: melt(new_matrix)
-      order <- dplyr:: arrange(new_matrix, paste('t', 1:(serieslength - frequency - 1), collapse = ','))
+      order <- dplyr:: arrange(new_matrix, paste('t', 1:(serieslength - frequency - 7), collapse = ','))
       new_matrix.melt$ID <- factor(new_matrix.melt$ID, levels = order$ID, labels = order$ID)
       return(new_matrix.melt)
     }
@@ -185,12 +184,15 @@ shinyServer(function(input, output) {
     final.long.confirmed.Taiwan.train <- do.call("rbind", long.confirmed.Taiwan.train)
     ## heatmap
     heatmap.plot <- ggplot(final.long.confirmed.Taiwan.train,
-                           aes(y = ID, x = variable, fill = value)) +
-      geom_raster() +
-      facet_grid( final.long.confirmed.Taiwan.train$cluster~., scales="free_y", space = "free")+
-      scale_fill_gradient2(high="red",  low="darkgreen")+
+                           aes(y = ID, x = variable)) +
+      #geom_raster() +
+      geom_tile(aes(fill = value)) +
+      facet_grid(final.long.confirmed.Taiwan.train$cluster~., scales="free_y", space = "free") +
+      scale_fill_gradientn(colours=c("white", "green", "darkgreen", "pink", "red", "darkred"),
+                           values= scales::rescale(c(0, 0.2, 0.4, 0.6, 0.8, 1)), guide="colorbar") +
+      #scale_fill_gradient2(high = "red",  low = "darkgreen", guide="colorbar") +
       theme_test()+
-      theme(legend.position = "bottom", text  = element_text(size = 15),
+      theme(legend.position = "bottom", text  = element_text(size = 12),
             panel.spacing = unit(0.1, "lines"),axis.text.y=element_blank(),
             axis.text.x = element_blank(),
             axis.title.x = element_blank(), axis.ticks=element_blank(),
@@ -237,16 +239,16 @@ shinyServer(function(input, output) {
       split.confirmed.Taiwan.train[[i]]$cluster <-  i
     }
     order.day <- function(df){
-      m.day <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (serieslength - frequency - 1),
+      m.day <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (serieslength - frequency - 7),
                                       ncol =  length(unique(df$city)))))
-      colnames(m.day) <- c(rep(c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed', 'Thu'), (serieslength - (2*frequency) - 1)/frequency), c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed'))
+      colnames(m.day) <- c(rep(c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed', 'Thu'), (serieslength - (2*frequency) - 7)/frequency), c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed'))
       m.day2 <-  split.default(m.day, names(m.day))
       m.day3 <- cbind.data.frame(m.day2$Mon, m.day2$Tue, m.day2$Wed, m.day2$Thu, m.day2$Fri, m.day2$Sat, m.day2$Sun)
       return(reshape2::melt(t(m.day3)))
     }
     ordar.day.confirmed <- lapply(split.confirmed.Taiwan.train, order.day)
     sort.dat.row <- function(df){
-      new_matrix <- as.data.frame(t(matrix(df$value, nrow = (serieslength - frequency - 2), ncol = nrow(df)/(serieslength - frequency - 2))))
+      new_matrix <- as.data.frame(t(matrix(df$value, nrow = (serieslength - frequency - 7 - 3), ncol = nrow(df)/(serieslength - frequency - 7 - 3))))
       colnames(new_matrix) <- unique(df$Var1)
       new_matrix <- cbind.data.frame("ID" = paste('s', 1:nrow(new_matrix), sep = ''), new_matrix)
       new_matrix.melt <-reshape2:: melt(new_matrix)
@@ -267,11 +269,13 @@ shinyServer(function(input, output) {
     }
     final.order.day.confirmed.Taiwan.train <- do.call("rbind", order.day.confirmed.Taiwan.train)
     
-    heatmap.plot2 <- ggplot(final.order.day.confirmed.Taiwan.train ,
-                            aes(y = ID, x = variable, fill = value)) +
-      geom_raster() +
+    heatmap.plot2 <- ggplot(final.order.day.confirmed.Taiwan.train , aes(y = ID, x = variable)) +
+      geom_tile(aes(fill = value)) +
+      #geom_raster() +
       facet_grid(final.order.day.confirmed.Taiwan.train$cluster~., scales="free_y", space = "free") +
-      scale_fill_gradient2(high = "red",  low = "darkgreen") +
+      scale_fill_gradientn(colours=c("white", "green", "darkgreen", "pink", "red", "darkred"),
+                           values= scales::rescale(c(0, 0.2, 0.4, 0.6, 0.8, 1)), guide="colorbar") +
+      #scale_fill_gradient2(high = "red",  low = "darkgreen", guide="colorbar") +
       scale_x_discrete(labels = as.character(c(rep('', (serieslength - (2*frequency) - 1)/frequency - 10), 'Fri', rep('', (serieslength - (2*frequency) - 1)/frequency), 'Sat',
                                                rep('', (serieslength - (2*frequency) - 1)/frequency), 'Sun', rep('', (serieslength - (2*frequency) - 1)/frequency), 'Mon',
                                                rep('', (serieslength - (2*frequency) - 1)/frequency), 'Tue', rep('', (serieslength - (2*frequency) - 1)/frequency), 'Wed',
@@ -409,7 +413,7 @@ shinyServer(function(input, output) {
       return(stats)
     }
     dataset <- fit2() %>%
-      filter(Horizon == 'h=1')
+      filter(Horizon == c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7'))
     
     forecast_plot1 <- ggplot(data = dataset, aes(x = Method, y = Error, fill = Method)) +
       stat_summary(fun.data = boxplot.stat, geom = "boxplot", alpha = 0.5) +
@@ -453,16 +457,14 @@ shinyServer(function(input, output) {
     if (is.null(dattrain()))
       return(NULL)
     dataset1 <- fit2() %>%
-      filter(Horizon != 'h=1') %>%
+      filter(Horizon != c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7')) %>%
       select(fc, Series)
     
     dataset2 <- as.data.frame(matrix(round(dataset1$fc), nrow = 7))
-    mah <- fit2() %>%
-      filter(Horizon == 'h=1') %>%
+    coltitle <- fit2() %>%
+      filter(Horizon == c('h=1')) %>%
       select(Series)
-    
-    colnames(dataset2) <- as.vector(mah$Series)
-    
+    colnames(dataset2) <- as.vector(coltitle$Series)
     dataset2 <- cbind.data.frame('Horizon' = c(1:7), dataset2)
     DT::datatable(dataset2, class = 'cell-border stripe', rownames = FALSE,
                   extensions = c('Buttons', 'Scroller'), options = list(scrollY = 300,
