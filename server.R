@@ -11,6 +11,7 @@ library(DT)
 library(tidyverse)
 library(lubridate)
 source('olsfc.single.R', local = TRUE)
+#source('smatrix.R', local = TRUE)
 
 shinyServer(function(input, output) {
   df_products_upload <- reactive({
@@ -61,14 +62,14 @@ shinyServer(function(input, output) {
     if (is.null(df_products_upload()))
       return(NULL)
     dattr <- df_products_upload() %>%
-      dplyr::filter(Date <=  ymd("2021-07-24"))
+      dplyr::filter(Date <=  ymd("2021-06-03"))
     return(dattr)
   })
   dattest<- reactive({
     if (is.null(df_products_upload()))
       return(NULL)
     datte <- df_products_upload()  %>%
-      dplyr::filter(Date >  ymd("2021-07-24"))
+      dplyr::filter(Date >  ymd("2021-06-03"))
     return(datte)
   })
   
@@ -110,10 +111,10 @@ shinyServer(function(input, output) {
       fitt[[i]] <- lm(form, data = train.cluster[[i]])
     train.cluster.single <- list()
     for(i in 1:length(train.cluster)){
-      train.cluster.single[[i]] <- matrix(train.cluster[[i]]$Confirmed.std, ncol = nrow(train.cluster [[i]])/(serieslength - frequency - 7), nrow = (serieslength - frequency - 7))
+      train.cluster.single[[i]] <- matrix(train.cluster[[i]]$Confirmed.std, ncol = nrow(train.cluster [[i]])/(serieslength - frequency - 1), nrow = (serieslength - frequency - 1))
       colnames(train.cluster.single[[i]]) <- unique(train.cluster[[i]]$city)
     }
-    h <- 14
+    h <- 8
     fc.single.list <- list()
     for(i in 1:length(train.cluster)){
       fc.single <- array(NA, c(Horizon = h, Series = NCOL(train.cluster.single[[i]]),Method = 1))
@@ -135,17 +136,43 @@ shinyServer(function(input, output) {
     }
     
     fc.single <- list()
+    fc.single.ahead <- list()
     for (i in seq(fc.single.list)) {
-      res.value <- data.frame('fc' = ((reshape2::melt(fc.single.list[[i]])$value*tests[[i]]$Confirmed.sd) + (tests[[i]]$Confirmed.mean)))
-      res.value$Error <- tests[[i]]$cases - res.value$fc
-      res.value$Series <- reshape2::melt(fc.single.list[[i]])$Series
-      res.value$Horizon <- reshape2::melt(fc.single.list[[i]])$Horizon
-      res.value$Cluster <- paste0('Cluster', i)
-      fc.single[[length(fc.single)+1]] <- res.value
+      fc.single.listi <- as.data.frame(fc.single.list[[i]])
+      meani <- matrix(test.cluster[[i]]$Confirmed.mean, ncol = ncol(fc.single.listi), nrow = 1)
+      sdi <- matrix(test.cluster[[i]]$Confirmed.sd, ncol = ncol(fc.single.listi), nrow = 1)
+      fci <- matrix(NA, nrow = 8, ncol = ncol(fc.single.listi))
+      for(j in 1:ncol(fc.single.listi))
+        fci[,j] <- (fc.single.listi[,j]*as.numeric(sdi[1,j])) + as.numeric(meani[1,j])
+      testi <- matrix(test.cluster[[i]]$cases, ncol = ncol(fc.single.listi), nrow = 1)
+      fc.errori <-  testi - fci[1,]
+      nameserrori <- matrix(test.cluster[[i]]$city, ncol = ncol(fc.single.listi), nrow = 1) 
+      fc.singlei <- fc.errori %>%
+        reshape2::melt() %>%
+        select('error' = value) %>%
+        mutate('fc' = reshape2::melt(fci[1,])$value) %>%
+        mutate('actual' = reshape2::melt(testi)$value) %>%
+        mutate("series" = reshape2::melt(nameserrori)$value) %>%
+        mutate('horizon' = rep(c('h=1'), ncol(fc.errori))) %>%
+        mutate('cluster' = paste0('Cluster', 1)) %>%
+        mutate('method' = 'test')
+      nameserrori2 <- rep(nameserrori, each=7)
+      fc.singlei.ahead <- fci[2:8,] %>%
+        reshape2::melt() %>%
+        select('fc' = value) %>%
+        mutate('error' = 0) %>%
+        mutate('actual' = 0) %>%
+        mutate("series" = nameserrori2) %>%
+        mutate('horizon' = rep(c('h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7', 'h=8'), ncol(fci)))%>%
+        mutate('cluster' = paste0('Cluster', 1)) %>%
+        mutate('method' = 'ahead') 
+      fc.single[[length(fc.single)+1]] <- fc.singlei
+      fc.single.ahead[[length(fc.single.ahead)+1]] <- fc.singlei.ahead 
     }
-    fc.single <- do.call('rbind', fc.single)
-    fc.single $Method <- 'OLS.single'
-    fc.single <- as.data.frame(fc.single)
+    
+    fc.single <- do.call('rbind.data.frame', fc.single)
+    fc.single.ahead <- do.call('rbind.data.frame', fc.single.ahead)
+    fc.OLS <- bind_rows(fc.single, fc.single.ahead)  
   })
   # ## title
   output$titleMSE = renderText({})
@@ -168,11 +195,11 @@ shinyServer(function(input, output) {
     }
     ## reordering series based on the series values
     order.data <- function(df) {
-      new_matrix <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (serieslength - frequency - 7), ncol = length(unique(df$city)))))
+      new_matrix <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (serieslength - frequency - 1), ncol = length(unique(df$city)))))
       new_matrix <- cbind.data.frame("ID" = paste('s', 1:nrow(new_matrix), sep = ''), new_matrix)
-      colnames(new_matrix) <- c("ID", paste('t', 1:(serieslength - frequency - 7), sep = ''))
+      colnames(new_matrix) <- c("ID", paste('t', 1:(serieslength - frequency - 1), sep = ''))
       new_matrix.melt <-reshape2:: melt(new_matrix)
-      order <- dplyr:: arrange(new_matrix, paste('t', 1:(serieslength - frequency - 7), collapse = ','))
+      order <- dplyr:: arrange(new_matrix, paste('t', 1:(serieslength - frequency - 1), collapse = ','))
       new_matrix.melt$ID <- factor(new_matrix.melt$ID, levels = order$ID, labels = order$ID)
       return(new_matrix.melt)
     }
@@ -239,16 +266,16 @@ shinyServer(function(input, output) {
       split.confirmed.Taiwan.train[[i]]$cluster <-  i
     }
     order.day <- function(df){
-      m.day <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (serieslength - frequency - 7),
+      m.day <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (serieslength - frequency - 1),
                                       ncol =  length(unique(df$city)))))
-      colnames(m.day) <- c(rep(c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed', 'Thu'), (serieslength - (2*frequency) - 7)/frequency), c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed'))
+      colnames(m.day) <- c(rep(c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed', 'Thu'), (serieslength - (2*frequency) - 1)/frequency), c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed'))
       m.day2 <-  split.default(m.day, names(m.day))
       m.day3 <- cbind.data.frame(m.day2$Mon, m.day2$Tue, m.day2$Wed, m.day2$Thu, m.day2$Fri, m.day2$Sat, m.day2$Sun)
       return(reshape2::melt(t(m.day3)))
     }
     ordar.day.confirmed <- lapply(split.confirmed.Taiwan.train, order.day)
     sort.dat.row <- function(df){
-      new_matrix <- as.data.frame(t(matrix(df$value, nrow = (serieslength - frequency - 7 - 3), ncol = nrow(df)/(serieslength - frequency - 7 - 3))))
+      new_matrix <- as.data.frame(t(matrix(df$value, nrow = (serieslength - frequency -  2), ncol = nrow(df)/(serieslength - frequency - 2))))
       colnames(new_matrix) <- unique(df$Var1)
       new_matrix <- cbind.data.frame("ID" = paste('s', 1:nrow(new_matrix), sep = ''), new_matrix)
       new_matrix.melt <-reshape2:: melt(new_matrix)
@@ -383,7 +410,7 @@ shinyServer(function(input, output) {
       theme_gray()+
       theme(panel.grid.major.x = element_line(colour = "grey99"),
             axis.title.x = element_text(size = rel(2)),
-            axis.text.x = element_text(angle=60,  vjust=.8, hjust=0.8,size = rel(2)),
+            axis.text.x = element_text(angle=60,  vjust=0.8, hjust=0.8,size = rel(2)),
             legend.text = element_text(size = rel(1.5)),
             legend.title = element_text(size = rel(1.5)),
             legend.direction = "horizontal",
@@ -413,9 +440,9 @@ shinyServer(function(input, output) {
       return(stats)
     }
     dataset <- fit2() %>%
-      filter(Horizon == c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7'))
+      filter(horizon == c('h=1'))
     
-    forecast_plot1 <- ggplot(data = dataset, aes(x = Method, y = Error, fill = Method)) +
+    forecast_plot1 <- ggplot(data = dataset, aes(x = method, y = error, fill = method)) +
       stat_summary(fun.data = boxplot.stat, geom = "boxplot", alpha = 0.5) +
       scale_fill_grey() +
       xlab("") + ylab("Error") +
@@ -430,7 +457,7 @@ shinyServer(function(input, output) {
         legend.position = "none"
       )
     
-    forecast_plot2 <-  ggplot(data = dataset, aes(x = Error, color = Method)) +
+    forecast_plot2 <-  ggplot(data = dataset, aes(x = error, color = method)) +
       geom_line(stat = "density", size = 1) +
       ylab("Density") + xlab("")+
       xlim (-10,10) +
@@ -457,15 +484,15 @@ shinyServer(function(input, output) {
     if (is.null(dattrain()))
       return(NULL)
     dataset1 <- fit2() %>%
-      filter(Horizon != c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7')) %>%
-      select(fc, Series)
+      filter(horizon != c('h=1')) %>%
+      select(fc, series, horizon)
     
-    dataset2 <- as.data.frame(matrix(round(dataset1$fc), nrow = 7))
+    dataset2 <- as.data.frame(matrix(trunc(dataset1$fc), nrow = 7))
     coltitle <- fit2() %>%
-      filter(Horizon == c('h=1')) %>%
-      select(Series)
-    colnames(dataset2) <- as.vector(coltitle$Series)
-    dataset2 <- cbind.data.frame('Horizon' = c(1:7), dataset2)
+      filter(horizon == c('h=1')) %>%
+      select(series)
+    colnames(dataset2) <- as.vector(coltitle$series)
+    dataset2 <- cbind.data.frame('horizon' = c(1:7), dataset2)
     DT::datatable(dataset2, class = 'cell-border stripe', rownames = FALSE,
                   extensions = c('Buttons', 'Scroller'), options = list(scrollY = 300,
                                                                         scrollX = 500,
