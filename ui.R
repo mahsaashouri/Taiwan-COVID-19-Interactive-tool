@@ -15,7 +15,7 @@ shinyUI(fluidPage( theme = shinytheme("cerulean"),
                                                    'text/comma-separated-values',
                                                    '.csv'
                                                )),
-                                     selectInput("Depth", label="MOB depth", choices=list("1-no"= "1","2" = "2", "3" = "3", "4" = "4"), selected=list("3")),
+                                     selectInput("Depth", label="MOB depth", choices=list("1-no"= "1","2" = "2", "3" = "3", "4" = "4", "5" = "5"), selected=list("3")),
                                      selectInput("Prune", label = "Prune options",
                                                  choices = list("AIC" = "AIC", "BIC" = "BIC"), selected = list("AIC")),
                                      checkboxGroupInput("SplitVariables", label = "Split variables",
