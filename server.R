@@ -11,7 +11,6 @@ library(DT)
 library(tidyverse)
 library(lubridate)
 source('olsfc.single.R', local = TRUE)
-#source('smatrix.R', local = TRUE)
 
 shinyServer(function(input, output) {
   df_products_upload <- reactive({
@@ -114,20 +113,25 @@ shinyServer(function(input, output) {
       train.cluster.single[[i]] <- matrix(train.cluster[[i]]$Confirmed.std, ncol = nrow(train.cluster [[i]])/(serieslength - frequency - 1), nrow = (serieslength - frequency - 1))
       colnames(train.cluster.single[[i]]) <- unique(train.cluster[[i]]$city)
     }
-    h <- 8
-    fc.single.list <- list()
+    train.cluster.ets <- list()
     for(i in 1:length(train.cluster)){
-      fc.single <- array(NA, c(Horizon = h, Series = NCOL(train.cluster.single[[i]]),Method = 1))
-      dimnames(fc.single) <- list(
-        Horizon = paste0("h=",seq(h)),
-        Series = colnames(train.cluster.single[[i]]),
-        Method = c('OLS.single'))
+      train.cluster.ets[[i]] <- matrix(train.cluster[[i]]$cases, ncol = nrow(train.cluster [[i]])/(serieslength - frequency - 1), nrow = (serieslength - frequency - 1))
+      colnames(train.cluster.ets[[i]]) <- unique(train.cluster[[i]]$city)
+    }
+    h <- 8
+    fc.list <- list()
+    for(i in 1:length(train.cluster)){
+      fc <- array(NA, c(Horizon = h, Series = NCOL(train.cluster.single[[i]]),Method = 2))
+      dimnames(fc) <- list(Horizon = paste0('h=',seq(8)), Series = colnames(train.cluster.single[[i]]), Method = c('OLS', 'ETS'))
       
       for(j in seq(NCOL(train.cluster.single[[i]]))){
-        fc.single[,j,'OLS.single'] <- olsfc.single(train.cluster.single[[i]][,j], h, frequency ,maxlag = frequency, fitt[[i]])
+        fc[,j,'OLS'] <- olsfc.single(train.cluster.single[[i]][,j], h, frequency ,maxlag = frequency, fitt[[i]])
+        fc[,j,'ETS'] <- forecast(ets(ts(train.cluster.ets[[i]][,j], frequency = 7)), h = 8)$mean
+        #fc[,j,'ARIMA'] <- forecast(auto.arima(ts(train.cluster.ets.arima[[i]][,j], frequency = 7)), h = 8)$mean
       }
-      fc.single.list[[length(fc.single.list)+1]] <- fc.single
+      fc.list[[length(fc.list)+1]] <- fc
     }
+    
     library(mefa)
     tests <- list()
     for (i in 1:length(test.cluster)){
@@ -137,42 +141,48 @@ shinyServer(function(input, output) {
     
     fc.single <- list()
     fc.single.ahead <- list()
-    for (i in seq(fc.single.list)) {
-      fc.single.listi <- as.data.frame(fc.single.list[[i]])
-      meani <- matrix(test.cluster[[i]]$Confirmed.mean, ncol = ncol(fc.single.listi), nrow = 1)
-      sdi <- matrix(test.cluster[[i]]$Confirmed.sd, ncol = ncol(fc.single.listi), nrow = 1)
-      fci <- matrix(NA, nrow = 8, ncol = ncol(fc.single.listi))
-      for(j in 1:ncol(fc.single.listi))
-        fci[,j] <- (fc.single.listi[,j]*as.numeric(sdi[1,j])) + as.numeric(meani[1,j])
-      testi <- matrix(test.cluster[[i]]$cases, ncol = ncol(fc.single.listi), nrow = 1)
+    for (i in seq(fc.list)) {
+      fc.listi <- as.data.frame(fc.list[[i]])
+      meani <- matrix(test.cluster[[i]]$Confirmed.mean, ncol = ncol(fc.listi), nrow = 1)
+      sdi <- matrix(test.cluster[[i]]$Confirmed.sd, ncol = ncol(fc.listi), nrow = 1)
+      fci <- matrix(NA, nrow = 8, ncol = ncol(fc.listi))
+      for(j in 1:(ncol(fc.listi)/2))
+        fci[,j] <- (fc.listi[,j]*as.numeric(sdi[1,j])) + as.numeric(meani[1,j])
+      for(j in ((ncol(fc.listi)/2)+1):ncol(fc.listi))
+        fci[,j] <- fc.listi[,j]
+      testi <- cbind.data.frame(matrix(test.cluster[[i]]$cases, ncol = ncol(fc.listi)/2, nrow = 1),
+                                matrix(test.cluster[[i]]$cases, ncol = ncol(fc.listi)/2, nrow = 1))
       fc.errori <-  testi - fci[1,]
-      nameserrori <- matrix(test.cluster[[i]]$city, ncol = ncol(fc.single.listi), nrow = 1) 
-      fc.singlei <- fc.errori %>%
-        reshape2::melt() %>%
-        select('error' = value) %>%
+      nameserrori <- cbind.data.frame(matrix(test.cluster[[i]]$city, ncol = ncol(fc.listi)/2, nrow = 1),
+                                      matrix(test.cluster[[i]]$city, ncol = ncol(fc.listi)/2, nrow = 1)) 
+      fc.errori <- as.data.frame(matrix(unlist(fc.errori), ncol = 1))
+      colnames(fc.errori) <- 'error'
+      fc.i <-  fc.errori %>%
         mutate('fc' = reshape2::melt(fci[1,])$value) %>%
         mutate('actual' = reshape2::melt(testi)$value) %>%
-        mutate("series" = reshape2::melt(nameserrori)$value) %>%
+        mutate("series" = as.vector(unlist(nameserrori))) %>%
         mutate('horizon' = rep(c('h=1'), ncol(fc.errori))) %>%
-        mutate('cluster' = paste0('Cluster', 1)) %>%
-        mutate('method' = 'test')
-      nameserrori2 <- rep(nameserrori, each=7)
-      fc.singlei.ahead <- fci[2:8,] %>%
+        mutate('cluster' = paste0('Cluster', i)) %>%
+        mutate('method' = rep(c('OLS', 'ETS'), each = ncol(fc.listi)/2)) %>%
+        mutate('method1' = 'test')
+      nameserrori2 <-rep(as.vector(unlist(nameserrori)), each=7)
+      fc.ahead <- fci[2:8,] %>%
         reshape2::melt() %>%
         select('fc' = value) %>%
         mutate('error' = 0) %>%
         mutate('actual' = 0) %>%
         mutate("series" = nameserrori2) %>%
         mutate('horizon' = rep(c('h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7', 'h=8'), ncol(fci)))%>%
-        mutate('cluster' = paste0('Cluster', 1)) %>%
-        mutate('method' = 'ahead') 
-      fc.single[[length(fc.single)+1]] <- fc.singlei
-      fc.single.ahead[[length(fc.single.ahead)+1]] <- fc.singlei.ahead 
+        mutate('cluster' = paste0('Cluster', i)) %>%
+        mutate('method' = rep(c('OLS', 'ETS'), each = (ncol(fc.listi)/2)*7)) %>%
+        mutate('method1' = 'ahead') 
+      fc.single[[length(fc.single)+1]] <- fc.i
+      fc.single.ahead[[length(fc.single.ahead)+1]] <- fc.ahead 
     }
     
     fc.single <- do.call('rbind.data.frame', fc.single)
     fc.single.ahead <- do.call('rbind.data.frame', fc.single.ahead)
-    fc.OLS <- bind_rows(fc.single, fc.single.ahead)  
+    fc.OLS.ETS <- bind_rows(fc.single, fc.single.ahead)  
   })
   # ## title
   output$titleMSE = renderText({})
@@ -376,7 +386,7 @@ shinyServer(function(input, output) {
         facet_wrap(confirmed.Taiwan2$cluster~., ncol = 2, scales = 'free')+
         theme_light()+
         theme(text  = element_text(size = 20), title = element_text(colour = "darkgreen", size = 15),
-              axis.text.y=element_text(size = 10), axis.text.x=element_text(size = 10))
+              axis.text.y=element_text(size = 10), axis.text.x=element_text(size = 12))
     }
   })
   ## title
@@ -450,11 +460,11 @@ shinyServer(function(input, output) {
       theme_minimal() +
       theme(
         axis.text.x = element_blank(),
-        axis.text = element_text(size = 10),
-        strip.text = element_text(size = 15),
-        axis.title = element_text(size = 15, face = "bold"),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 12),
+        axis.title = element_text(size = 12, face = "bold"),
         axis.title.x = element_blank(),
-        legend.position = "none"
+        legend.position = "bottom"
       )
     
     forecast_plot2 <-  ggplot(data = dataset, aes(x = error, color = method)) +
@@ -464,13 +474,13 @@ shinyServer(function(input, output) {
       theme_minimal() +
       guides(color = guide_legend("Method", nrow = 1))+
       theme(
-        axis.text.x = element_text(hjust = 1, size = 15),
-        axis.text = element_text(size = 10),
-        strip.text = element_text(size = 15),
-        axis.title = element_text(size = 15, face = 'bold'),
-        legend.position = "none",
-        legend.text = element_text(size = 15),
-        legend.title=element_text(size=15),
+        axis.text.x = element_text(hjust = 1, size = 12),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 12),
+        axis.title = element_text(size = 12, face = 'bold'),
+        legend.position = "bottom",
+        legend.text = element_text(size = 12),
+        legend.title=element_text(size=12),
         legend.key.size = unit(1, "cm"))
     grid.newpage()
     print(forecast_plot1, vp = viewport(x = 0.25, y = 0.5, width = 0.5, height =1))
@@ -479,21 +489,22 @@ shinyServer(function(input, output) {
   })
   ## title
   
-  output$titleforefuture = renderText({})
-  output$forecastfuture <- DT::renderDataTable({
+  output$titleforefutureOLS = renderText({})
+  output$forecastfutureOLS <- DT::renderDataTable({
     if (is.null(dattrain()))
       return(NULL)
-    dataset1 <- fit2() %>%
+    dataset1.OLS <- fit2() %>%
       filter(horizon != c('h=1')) %>%
+      filter(method == 'OLS') %>%
       select(fc, series, horizon)
     
-    dataset2 <- as.data.frame(matrix(trunc(dataset1$fc), nrow = 7))
-    coltitle <- fit2() %>%
-      filter(horizon == c('h=1')) %>%
+    dataset2.OLS <- as.data.frame(matrix(trunc(dataset1.OLS$fc), nrow = 7))
+    coltitle.OLS <- fit2() %>%
+      filter(horizon == c('h=1'), method == 'OLS') %>%
       select(series)
-    colnames(dataset2) <- as.vector(coltitle$series)
-    dataset2 <- cbind.data.frame('horizon' = c(1:7), dataset2)
-    DT::datatable(dataset2, class = 'cell-border stripe', rownames = FALSE,
+    colnames(dataset2.OLS) <- as.vector(coltitle.OLS$series)
+    dataset2.OLS <- cbind.data.frame('horizon' = c(1:7), dataset2.OLS)
+    DT::datatable(dataset2.OLS, class = 'cell-border stripe', rownames = FALSE,
                   extensions = c('Buttons', 'Scroller'), options = list(scrollY = 300,
                                                                         scrollX = 500,
                                                                         deferRender = TRUE,
@@ -503,6 +514,31 @@ shinyServer(function(input, output) {
                                                                         fixedColumns = TRUE))
     
   })
+  output$titleforefutureETS = renderText({})
+  output$forecastfutureETS <- DT::renderDataTable({
+    if (is.null(dattrain()))
+      return(NULL)
+    dataset1.ETS <- fit2() %>%
+      filter(horizon != c('h=1')) %>%
+      filter(method == 'ETS') %>%
+      select(fc, series, horizon)
+    
+    dataset2.ETS <- as.data.frame(matrix(trunc(dataset1.ETS$fc), nrow = 7))
+    coltitle.ETS <- fit2() %>%
+      filter(horizon == c('h=1'), method == 'ETS') %>%
+      select(series)
+    colnames(dataset2.ETS) <- as.vector(coltitle.ETS$series)
+    dataset2.ETS <- cbind.data.frame('horizon' = c(1:7), dataset2.ETS)
+    DT::datatable(dataset2.ETS, class = 'cell-border stripe', rownames = FALSE,
+                  extensions = c('Buttons', 'Scroller'), options = list(scrollY = 300,
+                                                                        scrollX = 500,
+                                                                        deferRender = TRUE,
+                                                                        scroller = TRUE,
+                                                                        buttons = list('excel'),
+                                                                        dom = 'lBfrtip',
+                                                                        fixedColumns = TRUE))
+  })
+
   # screenshot
   observeEvent(input$go, {
     screenshot(scale = 3,
