@@ -38,7 +38,9 @@ shinyUI(fluidPage( theme = shinytheme("cerulean"),
                            verbatimTextOutput("info"),
                            tabPanel(h3("Forecast error boxplot and density plot"), title = uiOutput("forecasts")),
                            tabPanel("Forecast error boxplot and density plot", plotOutput("forecasts")),
-                           tabPanel(h3("Forecast future - One week"), title = uiOutput("titleforefuture")),
-                           tabPanel("Forecast future - One week", div(DT::dataTableOutput("forecastfuture"), value = "title"), style = "font-size:150%")
+                           tabPanel(h3("Forecast future - One week - OLS"), title = uiOutput("titleforefutureOLS")),
+                           tabPanel("Forecast future - One week - OLS", div(DT::dataTableOutput("forecastfutureOLS"), value = "title"), style = "font-size:150%"),
+                           tabPanel(h3("Forecast future - One week - ETS"), title = uiOutput("titleforefutureETS")),
+                           tabPanel("Forecast future - One week - ETS", div(DT::dataTableOutput("forecastfutureETS"), value = "title"), style = "font-size:150%")
                        ))
 ))
