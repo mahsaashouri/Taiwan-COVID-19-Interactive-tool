@@ -10,6 +10,7 @@ library(reshape2)
 library(DT)
 library(tidyverse)
 library(lubridate)
+library(forecast)
 source('olsfc.single.R', local = TRUE)
 
 shinyServer(function(input, output) {
