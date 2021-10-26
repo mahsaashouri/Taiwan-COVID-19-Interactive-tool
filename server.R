@@ -10,8 +10,9 @@ library(reshape2)
 library(DT)
 library(tidyverse)
 library(lubridate)
-library(forecast)
+library(ie2misc)
 source('olsfc.single.R', local = TRUE)
+
 
 shinyServer(function(input, output) {
   df_products_upload <- reactive({
@@ -488,8 +489,33 @@ shinyServer(function(input, output) {
     print(forecast_plot2, vp = viewport(x = 0.75, y = 0.5, width = 0.5, height = 1.1))
     
   })
-  ## title
+  output$ForecastAccuracyTitleOLS = renderText({})
+  output$ForecastAccuracyOLS <- renderTable({
+    if (is.null(dattrain()))
+      return(NULL)
+    testOLS <- fit2()  %>%
+      filter(horizon == c('h=1'), method == 'OLS') 
+    MAEOLS <-  round(ie2misc::mae(testOLS$fc, testOLS$actual), digits = 3)
+    RMSEOLS <- round(ie2misc::rmse(testOLS$fc, testOLS$actual), digits = 3)
+    tab <- rbind("RMSE" = RMSEOLS,
+                 "MAE" = MAEOLS)
+    cbind(c('RMSE', 'MAE'), tab)
+  }, colnames = FALSE, align = "l") 
   
+  output$ForecastAccuracyTitleETS = renderText({})
+  output$ForecastAccuracyETS <- renderTable({
+    if (is.null(dattrain()))
+      return(NULL)
+    testETS <- fit2()  %>%
+      filter(horizon == c('h=1'), method == 'ETS') 
+    MAEETS <-  round(ie2misc::mae(testETS$fc, testETS$actual), digits = 3)
+    RMSEETS <- round(ie2misc::rmse(testETS$fc, testETS$actual), digits = 3)
+    
+    tab <- rbind("RMSE" = RMSEETS,
+                 "MAE" =  MAEETS)
+    cbind(c('RMSE', 'MAE'), tab)
+  }, colnames = FALSE, align = "l") 
+  ## title
   output$titleforefutureOLS = renderText({})
   output$forecastfutureOLS <- DT::renderDataTable({
     if (is.null(dattrain()))
