@@ -11,37 +11,52 @@ library(DT)
 library(tidyverse)
 library(lubridate)
 library(ie2misc)
+library(forecast)
 source('olsfc.single.R', local = TRUE)
 
 
 shinyServer(function(input, output) {
-  df_products_upload <- reactive({
+  df_upload <- reactive({
     inFile <-  input$target_upload
-    if (is.null(inFile))
+    if (is.null(inFile)){
       return(NULL)
-    confirmed.Taiwan <- read.csv(inFile$datapath, header = TRUE)
-    
-    confirmed.Taiwan <- confirmed.Taiwan[ ave(confirmed.Taiwan$cases != 0,confirmed.Taiwan$city, FUN = any), ]
-    # Series structures
-    nrows <- nrow(confirmed.Taiwan)
-    nseries <- length(unique(confirmed.Taiwan$city))
-    serieslength <- nrows/nseries
-    frequency <- 7
-    ## date added
-    confirmed.Taiwan <- confirmed.Taiwan %>%
-      mutate(Date = rep(rep(ymd("2021-01-01") + 0:(serieslength - 1)),nseries))
+    }
+    ## reading file & deleting zero series
+    confirmed.Taiwan <- read.csv(inFile$datapath, header = TRUE) %>% 
+      dplyr::group_by(city) %>%
+      filter(mean(cases)!=0) %>%
+      as.data.frame()
+    return(confirmed.Taiwan)
+  })
+  ## Series structures
+  values <- reactiveValues()
+  observe({
+    if (is.null(df_upload()))
+      return(NULL)
+      values$nrows <- nrow(df_upload())
+      values$nseries <- length(unique(df_upload()$city))
+      values$serieslength <-  nrow(df_upload())/length(unique(df_upload()$city))
+      values$frequency <- 7
+  })
+    df_change <- reactive ({
+      if (is.null(df_upload()))
+        return(NULL)
+      ## date added
+      confirmed.Taiwan <- df_upload() %>%
+      mutate(Date = rep(rep(ymd("2021-01-01") + 0:(values$serieslength - 1)),values$nseries))
     ## trend and season added
     confirmed.Taiwan <- dplyr::group_by(confirmed.Taiwan, Date) %>%
-      plyr::mutate(cases = ts(confirmed.Taiwan$cases, frequency = frequency)) %>%
-      plyr::mutate(season = factor(cycle(cases)), trend = rep(1:serieslength, nseries))
+      plyr::mutate(cases = ts(confirmed.Taiwan$cases, frequency = values$frequency)) %>%
+      plyr::mutate(season = factor(cycle(cases)), trend = rep(1:values$serieslength, values$nseries))%>%
+      as.data.frame()
     
     ## Normalizing the series 
     confirmed.Taiwan <- confirmed.Taiwan %>%
       plyr::ddply("city", transform, Confirmed.std = scale(cases)) %>%
       plyr::ddply("city", transform, Confirmed.sd = sd(cases)) %>%
-      plyr::ddply("city", transform, Confirmed.mean = mean(cases))
-    confirmed.Taiwan$mean<- mean(confirmed.Taiwan$cases)
-    confirmed.Taiwan$sd <- sd(confirmed.Taiwan$cases)
+      plyr::ddply("city", transform, Confirmed.mean = mean(cases)) %>%
+      as.data.frame()
+    
     
     ## category columns
     colsfac <- c('region', 'imported', 'administrative', 'airport')
@@ -53,24 +68,25 @@ shinyServer(function(input, output) {
     for (i in seq_along(category_sort))
       lag_making[[i]] <-
       quantmod::Lag(confirmed.Taiwan$Confirmed.std[confirmed.Taiwan$city == category_sort[i]], 1:7)
-    lag_making <- do.call(rbind, lag_making)
+    lag_making <- do.call(rbind.data.frame, lag_making)
     confirmed.Taiwan <- confirmed.Taiwan[order(confirmed.Taiwan$city), ]
-    confirmed.Taiwan <- cbind(confirmed.Taiwan, lag_making)
+    confirmed.Taiwan <- cbind.data.frame(confirmed.Taiwan, lag_making)
     return(confirmed.Taiwan)
   }) 
-  
   dattrain <- reactive({
-    if (is.null(df_products_upload()))
+    if (is.null(df_change()))
       return(NULL)
-    dattr <- df_products_upload() %>%
-      dplyr::filter(Date <=  ymd("2021-06-03"))
+    dattr <- df_change() %>%
+      dplyr::filter(Date <=  ymd("2021-06-03")) %>%
+      as.data.frame()
     return(dattr)
   })
   dattest<- reactive({
-    if (is.null(df_products_upload()))
+    if (is.null(df_change()))
       return(NULL)
-    datte <- df_products_upload()  %>%
-      dplyr::filter(Date >  ymd("2021-06-03"))
+    datte <- df_change()  %>%
+      dplyr::filter(Date >  ymd("2021-06-03"))%>%
+      as.data.frame()
     return(datte)
   })
   
@@ -80,7 +96,7 @@ shinyServer(function(input, output) {
     var <- input$SplitVariables
     var1 <- as.vector(unlist(var))
     form <- "Confirmed.std ~ trend +  season"
-    for (i in 1:frequency)
+    for (i in 1:values$frequency)
       form <- paste(form , " + ", paste("Lag", i, sep = '.'))
     form <- paste(form , '|')
     for (i in 1:(length(var1)-1))
@@ -103,7 +119,7 @@ shinyServer(function(input, output) {
     train.cluster <- split(na.omit(dattrain()), predict(fit(), type = "node"))
     test.cluster <- split(na.omit(dattest()), predict(fit(), type = "node", newdata = na.omit(dattest())))
     form <- "Confirmed.std ~ trend +  season"
-    for (i in 1:frequency)
+    for (i in 1:values$frequency)
       form <- paste(form , " + ", paste("Lag", i, sep = '.'))
     form <- as.formula(form)
     ## defining fit functions for each cluster
@@ -112,12 +128,12 @@ shinyServer(function(input, output) {
       fitt[[i]] <- lm(form, data = train.cluster[[i]])
     train.cluster.single <- list()
     for(i in 1:length(train.cluster)){
-      train.cluster.single[[i]] <- matrix(train.cluster[[i]]$Confirmed.std, ncol = nrow(train.cluster [[i]])/(serieslength - frequency - 1), nrow = (serieslength - frequency - 1))
+      train.cluster.single[[i]] <- matrix(train.cluster[[i]]$Confirmed.std, ncol = nrow(train.cluster [[i]])/(values$serieslength - values$frequency - 1), nrow = (values$serieslength - values$frequency - 1))
       colnames(train.cluster.single[[i]]) <- unique(train.cluster[[i]]$city)
     }
     train.cluster.ets <- list()
     for(i in 1:length(train.cluster)){
-      train.cluster.ets[[i]] <- matrix(train.cluster[[i]]$cases, ncol = nrow(train.cluster [[i]])/(serieslength - frequency - 1), nrow = (serieslength - frequency - 1))
+      train.cluster.ets[[i]] <- matrix(train.cluster[[i]]$cases, ncol = nrow(train.cluster [[i]])/(values$serieslength - values$frequency - 1), nrow = (values$serieslength - values$frequency - 1))
       colnames(train.cluster.ets[[i]]) <- unique(train.cluster[[i]]$city)
     }
     h <- 8
@@ -127,7 +143,7 @@ shinyServer(function(input, output) {
       dimnames(fc) <- list(Horizon = paste0('h=',seq(8)), Series = colnames(train.cluster.single[[i]]), Method = c('OLS', 'ETS'))
       
       for(j in seq(NCOL(train.cluster.single[[i]]))){
-        fc[,j,'OLS'] <- olsfc.single(train.cluster.single[[i]][,j], h, frequency ,maxlag = frequency, fitt[[i]])
+        fc[,j,'OLS'] <- olsfc.single(train.cluster.single[[i]][,j], h, values$frequency ,maxlag = values$frequency, fitt[[i]])
         fc[,j,'ETS'] <- forecast(ets(ts(train.cluster.ets[[i]][,j], frequency = 7)), h = 8)$mean
         #fc[,j,'ARIMA'] <- forecast(auto.arima(ts(train.cluster.ets.arima[[i]][,j], frequency = 7)), h = 8)$mean
       }
@@ -207,11 +223,11 @@ shinyServer(function(input, output) {
     }
     ## reordering series based on the series values
     order.data <- function(df) {
-      new_matrix <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (serieslength - frequency - 1), ncol = length(unique(df$city)))))
+      new_matrix <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (values$serieslength - values$frequency - 1), ncol = length(unique(df$city)))))
       new_matrix <- cbind.data.frame("ID" = paste('s', 1:nrow(new_matrix), sep = ''), new_matrix)
-      colnames(new_matrix) <- c("ID", paste('t', 1:(serieslength - frequency - 1), sep = ''))
+      colnames(new_matrix) <- c("ID", paste('t', 1:(values$serieslength - values$frequency - 1), sep = ''))
       new_matrix.melt <-reshape2:: melt(new_matrix)
-      order <- dplyr:: arrange(new_matrix, paste('t', 1:(serieslength - frequency - 1), collapse = ','))
+      order <- dplyr:: arrange(new_matrix, paste('t', 1:(values$serieslength - values$frequency - 1), collapse = ','))
       new_matrix.melt$ID <- factor(new_matrix.melt$ID, levels = order$ID, labels = order$ID)
       return(new_matrix.melt)
     }
@@ -278,26 +294,26 @@ shinyServer(function(input, output) {
       split.confirmed.Taiwan.train[[i]]$cluster <-  i
     }
     order.day <- function(df){
-      m.day <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (serieslength - frequency - 1),
+      m.day <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (values$serieslength - values$frequency - 1),
                                       ncol =  length(unique(df$city)))))
-      colnames(m.day) <- c(rep(c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed', 'Thu'), (serieslength - (2*frequency) - 1)/frequency), c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed'))
+      colnames(m.day) <- c(rep(c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed', 'Thu'), (values$serieslength - (2*values$frequency) - 1)/values$frequency), c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed'))
       m.day2 <-  split.default(m.day, names(m.day))
       m.day3 <- cbind.data.frame(m.day2$Mon, m.day2$Tue, m.day2$Wed, m.day2$Thu, m.day2$Fri, m.day2$Sat, m.day2$Sun)
       return(reshape2::melt(t(m.day3)))
     }
     ordar.day.confirmed <- lapply(split.confirmed.Taiwan.train, order.day)
     sort.dat.row <- function(df){
-      new_matrix <- as.data.frame(t(matrix(df$value, nrow = (serieslength - frequency -  2), ncol = nrow(df)/(serieslength - frequency - 2))))
+      new_matrix <- as.data.frame(t(matrix(df$value, nrow = (values$serieslength - values$frequency -  2), ncol = nrow(df)/(values$serieslength - values$frequency - 2))))
       colnames(new_matrix) <- unique(df$Var1)
       new_matrix <- cbind.data.frame("ID" = paste('s', 1:nrow(new_matrix), sep = ''), new_matrix)
       new_matrix.melt <-reshape2:: melt(new_matrix)
-      order <- dplyr::arrange(new_matrix, paste('Fri', paste('Fri', 1:(serieslength - (2*frequency) - 1)/frequency, collapse = ','),  collapse = ','),
-                              paste('Sat', paste('Sat', 1:(serieslength - (2*frequency) - 1)/frequency, collapse = ','),  collapse = ','),
-                              paste('Sun', paste('Sun', 1:(serieslength - (2*frequency) - 1)/frequency, collapse = ','),  collapse = ','),
-                              paste('Mon', paste('Mon', 1:(serieslength - (2*frequency) - 1)/frequency, collapse = ','),  collapse = ','),
-                              paste('Tue', paste('Tue', 1:(serieslength - (2*frequency) - 1)/frequency, collapse = ','),  collapse = ','),
-                              paste('Wed', paste('Wed', 1:(serieslength - (2*frequency) - 1)/frequency, collapse = ','),  collapse = ','),
-                              paste('Thu', paste('Thu', 1:(serieslength - (2*frequency) - 1)/frequency, collapse = ','),  collapse = ','))
+      order <- dplyr::arrange(new_matrix, paste('Fri', paste('Fri', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
+                              paste('Sat', paste('Sat', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
+                              paste('Sun', paste('Sun', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
+                              paste('Mon', paste('Mon', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
+                              paste('Tue', paste('Tue', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
+                              paste('Wed', paste('Wed', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
+                              paste('Thu', paste('Thu', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','))
       new_matrix.melt$ID <- factor(new_matrix.melt$ID, levels = order$ID, labels = order$ID)
       return(new_matrix.melt)
     }
@@ -315,10 +331,10 @@ shinyServer(function(input, output) {
       scale_fill_gradientn(colours=c("white", "green", "darkgreen", "pink", "red", "darkred"),
                            values= scales::rescale(c(0, 0.2, 0.4, 0.6, 0.8, 1)), guide="colorbar") +
       #scale_fill_gradient2(high = "red",  low = "darkgreen", guide="colorbar") +
-      scale_x_discrete(labels = as.character(c(rep('', (serieslength - (2*frequency) - 1)/frequency - 10), 'Fri', rep('', (serieslength - (2*frequency) - 1)/frequency), 'Sat',
-                                               rep('', (serieslength - (2*frequency) - 1)/frequency), 'Sun', rep('', (serieslength - (2*frequency) - 1)/frequency), 'Mon',
-                                               rep('', (serieslength - (2*frequency) - 1)/frequency), 'Tue', rep('', (serieslength - (2*frequency) - 1)/frequency), 'Wed',
-                                               rep('', (serieslength - (2*frequency) - 1)/frequency), 'Thu', rep('', (serieslength - (2*frequency) - 1)/frequency - 5)))) +
+      scale_x_discrete(labels = as.character(c(rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency - 10), 'Fri', rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Sat',
+                                               rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Sun', rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Mon',
+                                               rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Tue', rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Wed',
+                                               rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Thu', rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency - 5)))) +
       theme_test()+
       theme(legend.position = "bottom", text  = element_text(size = 15),
             panel.spacing = unit(0.1, "lines"),
@@ -565,7 +581,7 @@ shinyServer(function(input, output) {
                                                                         dom = 'lBfrtip',
                                                                         fixedColumns = TRUE))
   })
-
+  
   # screenshot
   observeEvent(input$go, {
     screenshot(scale = 3,
