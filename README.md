@@ -6,3 +6,7 @@ Our dataset is ```covid19_tw.csv```, which shows the daily Taiwan COVID-19 confi
 The app screenshot using MOB depth = 3, Prune option = 'AIC' with all the above domain-relevant attributes as splitting variables:
 
 ![alt text](<https://github.com/mahsaashouri/Taiwan-COVID-19-Interactive-tool/blob/main/screenshot-Taiwan-Interactive-tool.png>)
+
+
+Binder 
+[![Binder](https://mybinder.org/v2/gh/mahsaashouri/Taiwan-COVID-19-Interactive-tool/main?urlpath=shiny/HEAD)
