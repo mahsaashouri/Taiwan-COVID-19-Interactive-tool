@@ -12,6 +12,7 @@ library(tidyverse)
 library(lubridate)
 library(ie2misc)
 library(forecast)
+library(DescTools)
 source('olsfc.single.R', local = TRUE)
 
 
@@ -44,14 +45,25 @@ shinyServer(function(input, output) {
       ## date added
       confirmed.Taiwan <- df_upload() %>%
       mutate(Date = rep(rep(ymd("2021-01-01") + 0:(values$serieslength - 1)),values$nseries))
+    return(confirmed.Taiwan)
+  }) 
+  dattrain <- reactive({
+    if (is.null(df_change()))
+      return(NULL)
     ## trend and season added
-    confirmed.Taiwan <- dplyr::group_by(confirmed.Taiwan, Date) %>%
-      plyr::mutate(cases = ts(confirmed.Taiwan$cases, frequency = values$frequency)) %>%
-      plyr::mutate(season = factor(cycle(cases)), trend = rep(1:values$serieslength, values$nseries))%>%
+    dattr <- df_change() %>%
+      dplyr::filter(Date <=  ymd("2021-06-03")) %>%
+      as.data.frame()
+    nrowst <- nrow(dattr)
+    nseriest <- length(unique(dattr$city))
+    serieslengtht <-  nrow(dattr)/length(unique(dattr$city))
+    dattr <- dplyr::group_by(dattr, Date) %>%
+      plyr::mutate(cases = ts(dattr$cases, frequency = values$frequency)) %>%
+      plyr::mutate(season = factor(cycle(cases)), trend = rep(1:serieslengtht, nseriest))%>%
       as.data.frame()
     
     ## Normalizing the series 
-    confirmed.Taiwan <- confirmed.Taiwan %>%
+    dattr <- dattr %>%
       plyr::ddply("city", transform, Confirmed.std = scale(cases)) %>%
       plyr::ddply("city", transform, Confirmed.sd = sd(cases)) %>%
       plyr::ddply("city", transform, Confirmed.mean = mean(cases)) %>%
@@ -60,25 +72,17 @@ shinyServer(function(input, output) {
     
     ## category columns
     colsfac <- c('region', 'imported', 'administrative', 'airport')
-    confirmed.Taiwan <- confirmed.Taiwan %>% mutate_at(colsfac, list(~factor(.)))
+    dattr <- dattr %>% mutate_at(colsfac, list(~factor(.)))
     
     ## lags added
-    category_sort <- sort(unique(confirmed.Taiwan$city))
+    category_sort <- sort(unique(dattr$city))
     lag_making <- list()
     for (i in seq_along(category_sort))
       lag_making[[i]] <-
-      quantmod::Lag(confirmed.Taiwan$Confirmed.std[confirmed.Taiwan$city == category_sort[i]], 1:7)
+      quantmod::Lag(dattr$Confirmed.std[dattr$city == category_sort[i]], 1:7)
     lag_making <- do.call(rbind.data.frame, lag_making)
-    confirmed.Taiwan <- confirmed.Taiwan[order(confirmed.Taiwan$city), ]
-    confirmed.Taiwan <- cbind.data.frame(confirmed.Taiwan, lag_making)
-    return(confirmed.Taiwan)
-  }) 
-  dattrain <- reactive({
-    if (is.null(df_change()))
-      return(NULL)
-    dattr <- df_change() %>%
-      dplyr::filter(Date <=  ymd("2021-06-03")) %>%
-      as.data.frame()
+    dattr <- dattr[order(dattr$city), ]
+    dattr <- cbind.data.frame(dattr, lag_making)
     return(dattr)
   })
   dattest<- reactive({
@@ -112,12 +116,20 @@ shinyServer(function(input, output) {
     MOBtree <- mob( formula, data = dattrain() , fit = linear, control =
                       mob_control(prune = input$Prune,  maxdepth = depth, alpha = 0.01))
   })
-  # 
+  #  forecasting models
   fit2 <- reactive({
+    ## number of validation set 
+    h1 <- 7
     if (is.null(dattrain()))
       return(NULL)
     train.cluster <- split(na.omit(dattrain()), predict(fit(), type = "node"))
-    test.cluster <- split(na.omit(dattest()), predict(fit(), type = "node", newdata = na.omit(dattest())))
+    #test.cluster <- split(na.omit(dattest()), predict(fit(), type = "node", newdata = na.omit(dattest())))
+    test.cluster <- list()
+    for(i in 1:length(train.cluster)){
+      test.cluster[[i]] <- dattest() %>%
+        filter(city %in% train.cluster[[i]]$city)
+    }
+    
     form <- "Confirmed.std ~ trend +  season"
     for (i in 1:values$frequency)
       form <- paste(form , " + ", paste("Lag", i, sep = '.'))
@@ -128,69 +140,75 @@ shinyServer(function(input, output) {
       fitt[[i]] <- lm(form, data = train.cluster[[i]])
     train.cluster.single <- list()
     for(i in 1:length(train.cluster)){
-      train.cluster.single[[i]] <- matrix(train.cluster[[i]]$Confirmed.std, ncol = nrow(train.cluster [[i]])/(values$serieslength - values$frequency - 1), nrow = (values$serieslength - values$frequency - 1))
+      train.cluster.single[[i]] <- matrix(train.cluster[[i]]$Confirmed.std, ncol = nrow(train.cluster [[i]])/(values$serieslength - values$frequency - h1), nrow = (values$serieslength - values$frequency - h1))
       colnames(train.cluster.single[[i]]) <- unique(train.cluster[[i]]$city)
     }
     train.cluster.ets <- list()
     for(i in 1:length(train.cluster)){
-      train.cluster.ets[[i]] <- matrix(train.cluster[[i]]$cases, ncol = nrow(train.cluster [[i]])/(values$serieslength - values$frequency - 1), nrow = (values$serieslength - values$frequency - 1))
+      train.cluster.ets[[i]] <- matrix(train.cluster[[i]]$cases, ncol = nrow(train.cluster [[i]])/(values$serieslength - values$frequency - h1), nrow = (values$serieslength - values$frequency - h1))
       colnames(train.cluster.ets[[i]]) <- unique(train.cluster[[i]]$city)
     }
-    h <- 8
+    ## Forecast horizon
+    h <- 14
     fc.list <- list()
     for(i in 1:length(train.cluster)){
       fc <- array(NA, c(Horizon = h, Series = NCOL(train.cluster.single[[i]]),Method = 2))
-      dimnames(fc) <- list(Horizon = paste0('h=',seq(8)), Series = colnames(train.cluster.single[[i]]), Method = c('OLS', 'ETS'))
+      dimnames(fc) <- list(Horizon = paste0('h=',seq(h)), Series = colnames(train.cluster.single[[i]]), Method = c('OLS', 'ETS'))
       
       for(j in seq(NCOL(train.cluster.single[[i]]))){
+        ## Single ols model
         fc[,j,'OLS'] <- olsfc.single(train.cluster.single[[i]][,j], h, values$frequency ,maxlag = values$frequency, fitt[[i]])
-        fc[,j,'ETS'] <- forecast(ets(ts(train.cluster.ets[[i]][,j], frequency = 7)), h = 8)$mean
+        ## ETS model
+        fc[,j,'ETS'] <- forecast(ets(ts(train.cluster.ets[[i]][,j], frequency = 7)), h = h)$mean
         #fc[,j,'ARIMA'] <- forecast(auto.arima(ts(train.cluster.ets.arima[[i]][,j], frequency = 7)), h = 8)$mean
       }
       fc.list[[length(fc.list)+1]] <- fc
     }
     
-    library(mefa)
-    tests <- list()
-    for (i in 1:length(test.cluster)){
-      tests1 <-  rep(test.cluster[[i]], each = h)
-      tests[[length(tests)+1]] <- tests1
-    }
+    # library(mefa)
+    # tests <- list()
+    # for (i in 1:length(test.cluster)){
+    #   tests1 <-  rep(test.cluster[[i]], each = h)
+    #   tests[[length(tests)+1]] <- tests1
+    # }
     
     fc.single <- list()
     fc.single.ahead <- list()
     for (i in seq(fc.list)) {
       fc.listi <- as.data.frame(fc.list[[i]])
-      meani <- matrix(test.cluster[[i]]$Confirmed.mean, ncol = ncol(fc.listi), nrow = 1)
-      sdi <- matrix(test.cluster[[i]]$Confirmed.sd, ncol = ncol(fc.listi), nrow = 1)
-      fci <- matrix(NA, nrow = 8, ncol = ncol(fc.listi))
+      testt1 <- dplyr::group_by(train.cluster[[i]], city) %>%
+        filter(row_number() == c(1:h1))
+      meani <- matrix(testt1$Confirmed.mean, ncol = ncol(fc.listi), nrow = h1)
+      sdi <- matrix(testt1$Confirmed.sd, ncol = ncol(fc.listi), nrow = h1)
+      fci <- matrix(NA, nrow = h, ncol = ncol(fc.listi))
       for(j in 1:(ncol(fc.listi)/2))
         fci[,j] <- (fc.listi[,j]*as.numeric(sdi[1,j])) + as.numeric(meani[1,j])
       for(j in ((ncol(fc.listi)/2)+1):ncol(fc.listi))
         fci[,j] <- fc.listi[,j]
-      testi <- cbind.data.frame(matrix(test.cluster[[i]]$cases, ncol = ncol(fc.listi)/2, nrow = 1),
-                                matrix(test.cluster[[i]]$cases, ncol = ncol(fc.listi)/2, nrow = 1))
-      fc.errori <-  testi - fci[1,]
-      nameserrori <- cbind.data.frame(matrix(test.cluster[[i]]$city, ncol = ncol(fc.listi)/2, nrow = 1),
-                                      matrix(test.cluster[[i]]$city, ncol = ncol(fc.listi)/2, nrow = 1)) 
-      fc.errori <- as.data.frame(matrix(unlist(fc.errori), ncol = 1))
-      colnames(fc.errori) <- 'error'
-      fc.i <-  fc.errori %>%
-        mutate('fc' = reshape2::melt(fci[1,])$value) %>%
+      testi <- cbind.data.frame(matrix(test.cluster[[i]]$cases, ncol = ncol(fc.listi)/2, nrow = h1),
+                                matrix(test.cluster[[i]]$cases, ncol = ncol(fc.listi)/2, nrow = h1))
+      fc.errori <-  testi - fci[c(1:h1),]
+      nameserrori <- cbind.data.frame(matrix(test.cluster[[i]]$city, ncol = ncol(fc.listi)/2, nrow = h1),
+                                      matrix(test.cluster[[i]]$city, ncol = ncol(fc.listi)/2, nrow = h1)) 
+      fc.errori2 <- as.data.frame(matrix(unlist(fc.errori), ncol = 1))
+      colnames(fc.errori2) <- 'error'
+      ## Validation set forecast results
+      fc.i <-  fc.errori2 %>%
+        mutate('fc' = reshape2::melt(fci[c(1:h1),])$value) %>%
         mutate('actual' = reshape2::melt(testi)$value) %>%
-        mutate("series" = as.vector(unlist(nameserrori))) %>%
-        mutate('horizon' = rep(c('h=1'), ncol(fc.errori))) %>%
+        mutate("series" = rep(as.vector(unlist(nameserrori)), each=1)) %>%
+        mutate('horizon' = rep(c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7'), ncol(fc.errori))) %>%
         mutate('cluster' = paste0('Cluster', i)) %>%
-        mutate('method' = rep(c('OLS', 'ETS'), each = ncol(fc.listi)/2)) %>%
+        mutate('method' = rep(c('OLS', 'ETS'), each = (ncol(fc.listi)/2)*h1)) %>%
         mutate('method1' = 'test')
-      nameserrori2 <-rep(as.vector(unlist(nameserrori)), each=7)
-      fc.ahead <- fci[2:8,] %>%
+      ## 7-day-ahead forecast results
+      fc.ahead <- fci[(h1+1):h,] %>%
         reshape2::melt() %>%
         select('fc' = value) %>%
         mutate('error' = 0) %>%
         mutate('actual' = 0) %>%
-        mutate("series" = nameserrori2) %>%
-        mutate('horizon' = rep(c('h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7', 'h=8'), ncol(fci)))%>%
+        mutate("series" = rep(as.vector(unlist(nameserrori)), each=1)) %>%
+        mutate('horizon' = rep(c('h=8', 'h=9', 'h=10', 'h=11', 'h=12', 'h=13', 'h=14'), ncol(fci)))%>%
         mutate('cluster' = paste0('Cluster', i)) %>%
         mutate('method' = rep(c('OLS', 'ETS'), each = (ncol(fc.listi)/2)*7)) %>%
         mutate('method1' = 'ahead') 
@@ -202,7 +220,7 @@ shinyServer(function(input, output) {
     fc.single.ahead <- do.call('rbind.data.frame', fc.single.ahead)
     fc.OLS.ETS <- bind_rows(fc.single, fc.single.ahead)  
   })
-  # ## title
+  ## title
   output$titleMSE = renderText({})
   ## MSE for different MOB depth
   output$MSE <- renderTable({
@@ -215,6 +233,7 @@ shinyServer(function(input, output) {
   output$titleHeatmap1 = renderText({})
   ## MOB and heatmap plotting
   output$MOBTree1 <- renderPlot({
+    h1 <- 7
     if (is.null(dattrain()))
       return(NULL)
     split.confirmed.Taiwan.train <- split(na.omit(dattrain()), predict(fit(), type = "node"))
@@ -223,11 +242,11 @@ shinyServer(function(input, output) {
     }
     ## reordering series based on the series values
     order.data <- function(df) {
-      new_matrix <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (values$serieslength - values$frequency - 1), ncol = length(unique(df$city)))))
+      new_matrix <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (values$serieslength - values$frequency - h1), ncol = length(unique(df$city)))))
       new_matrix <- cbind.data.frame("ID" = paste('s', 1:nrow(new_matrix), sep = ''), new_matrix)
-      colnames(new_matrix) <- c("ID", paste('t', 1:(values$serieslength - values$frequency - 1), sep = ''))
+      colnames(new_matrix) <- c("ID", paste('t', 1:(values$serieslength - values$frequency - h1), sep = ''))
       new_matrix.melt <-reshape2:: melt(new_matrix)
-      order <- dplyr:: arrange(new_matrix, paste('t', 1:(values$serieslength - values$frequency - 1), collapse = ','))
+      order <- dplyr:: arrange(new_matrix, paste('t', 1:(values$serieslength - values$frequency - h1), collapse = ','))
       new_matrix.melt$ID <- factor(new_matrix.melt$ID, levels = order$ID, labels = order$ID)
       return(new_matrix.melt)
     }
@@ -287,6 +306,7 @@ shinyServer(function(input, output) {
   output$titleHeatmap2 = renderText({})
   # ## heatmap by day of week
   output$MOBTree2 <- renderPlot({
+    h1 <- 7
     if (is.null(dattrain()))
       return(NULL)
     split.confirmed.Taiwan.train <- split(na.omit(dattrain()), predict(fit(), type = "node"))
@@ -294,20 +314,20 @@ shinyServer(function(input, output) {
       split.confirmed.Taiwan.train[[i]]$cluster <-  i
     }
     order.day <- function(df){
-      m.day <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (values$serieslength - values$frequency - 1),
+      m.day <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (values$serieslength - values$frequency - h1),
                                       ncol =  length(unique(df$city)))))
-      colnames(m.day) <- c(rep(c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed', 'Thu'), (values$serieslength - (2*values$frequency) - 1)/values$frequency), c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed'))
+      colnames(m.day) <- c(rep(c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed', 'Thu'), (values$serieslength - (2*values$frequency) - h1)/values$frequency), c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed'))
       m.day2 <-  split.default(m.day, names(m.day))
       m.day3 <- cbind.data.frame(m.day2$Mon, m.day2$Tue, m.day2$Wed, m.day2$Thu, m.day2$Fri, m.day2$Sat, m.day2$Sun)
       return(reshape2::melt(t(m.day3)))
     }
     ordar.day.confirmed <- lapply(split.confirmed.Taiwan.train, order.day)
     sort.dat.row <- function(df){
-      new_matrix <- as.data.frame(t(matrix(df$value, nrow = (values$serieslength - values$frequency -  2), ncol = nrow(df)/(values$serieslength - values$frequency - 2))))
+      new_matrix <- as.data.frame(t(matrix(df$value, nrow = (values$serieslength - values$frequency -  h1 - 1), ncol = nrow(df)/(values$serieslength - values$frequency - h1 - 1))))
       colnames(new_matrix) <- unique(df$Var1)
       new_matrix <- cbind.data.frame("ID" = paste('s', 1:nrow(new_matrix), sep = ''), new_matrix)
       new_matrix.melt <-reshape2:: melt(new_matrix)
-      order <- dplyr::arrange(new_matrix, paste('Fri', paste('Fri', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
+      order <- dplyr::arrange(new_matrix, paste('Fri', paste('Fri', 1:(values$serieslength - (2*values$frequency) - h1)/values$frequency, collapse = ','),  collapse = ','),
                               paste('Sat', paste('Sat', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
                               paste('Sun', paste('Sun', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
                               paste('Mon', paste('Mon', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
@@ -468,7 +488,7 @@ shinyServer(function(input, output) {
       return(stats)
     }
     dataset <- fit2() %>%
-      filter(horizon == c('h=1'))
+      filter(horizon == c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7'))
     
     forecast_plot1 <- ggplot(data = dataset, aes(x = method, y = error, fill = method)) +
       stat_summary(fun.data = boxplot.stat, geom = "boxplot", alpha = 0.5) +
@@ -505,25 +525,49 @@ shinyServer(function(input, output) {
     print(forecast_plot2, vp = viewport(x = 0.75, y = 0.5, width = 0.5, height = 1.1))
     
   })
+  ### correlation coefficients - ols model
+  output$ForecastAccuracyTitleOLScorr = renderText({})
+  output$ForecastAccuracyOLScorr <- renderTable({
+    if (is.null(dattrain()))
+      return(NULL)
+    testOLS <- fit2() %>%
+      filter(horizon == c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7'), method == 'OLS') %>%
+      group_split(cluster)
+    PearsonCC <- list()
+    CCC <- list()
+    for (i in 1:length(testOLS)) {
+      PearsonCC[[i]] <- round(stats::cor(testOLS[[i]]$fc, testOLS[[i]]$actual , method = "pearson", use = "complete.obs"), digits = 3)
+      CCC[[i]] <- round(DescTools::CCC(testOLS[[i]]$fc, testOLS[[i]]$actual)$rho.c$est, digits = 3)
+    }
+    tab1 <- do.call(rbind, PearsonCC)
+    tab2 <- do.call(rbind, CCC)
+    tab3 <- NULL
+    for(i in 1: length(PearsonCC)){
+      tab3 <- rbind(tab3, paste('Cluster', i, sep = '') )
+    }
+    tab11 <- cbind( tab3,  tab1, tab2)
+    tab <- rbind(c('', 'Pearson', 'Concordance'), tab11)
+  }, colnames = FALSE, align = "l") 
+  ## forecast accuracy ols
   output$ForecastAccuracyTitleOLS = renderText({})
   output$ForecastAccuracyOLS <- renderTable({
     if (is.null(dattrain()))
       return(NULL)
     testOLS <- fit2()  %>%
-      filter(horizon == c('h=1'), method == 'OLS') 
+      filter(horizon == c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7'), method == 'OLS') 
     MAEOLS <-  round(ie2misc::mae(testOLS$fc, testOLS$actual), digits = 3)
     RMSEOLS <- round(ie2misc::rmse(testOLS$fc, testOLS$actual), digits = 3)
     tab <- rbind("RMSE" = RMSEOLS,
                  "MAE" = MAEOLS)
     cbind(c('RMSE', 'MAE'), tab)
   }, colnames = FALSE, align = "l") 
-  
+  ## forecast accuracy ets
   output$ForecastAccuracyTitleETS = renderText({})
   output$ForecastAccuracyETS <- renderTable({
     if (is.null(dattrain()))
       return(NULL)
     testETS <- fit2()  %>%
-      filter(horizon == c('h=1'), method == 'ETS') 
+      filter(horizon == c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7'), method == 'ETS') 
     MAEETS <-  round(ie2misc::mae(testETS$fc, testETS$actual), digits = 3)
     RMSEETS <- round(ie2misc::rmse(testETS$fc, testETS$actual), digits = 3)
     
@@ -537,7 +581,7 @@ shinyServer(function(input, output) {
     if (is.null(dattrain()))
       return(NULL)
     dataset1.OLS <- fit2() %>%
-      filter(horizon != c('h=1')) %>%
+      filter(horizon != c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7')) %>%
       filter(method == 'OLS') %>%
       select(fc, series, horizon)
     
@@ -562,7 +606,7 @@ shinyServer(function(input, output) {
     if (is.null(dattrain()))
       return(NULL)
     dataset1.ETS <- fit2() %>%
-      filter(horizon != c('h=1')) %>%
+      filter(horizon != c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7')) %>%
       filter(method == 'ETS') %>%
       select(fc, series, horizon)
     
