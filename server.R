@@ -10,7 +10,7 @@ library(reshape2)
 library(DT)
 library(tidyverse)
 library(lubridate)
-library(ie2misc)
+#library(ie2misc)
 library(forecast)
 library(DescTools)
 source('olsfc.single.R', local = TRUE)
@@ -555,8 +555,8 @@ shinyServer(function(input, output) {
       return(NULL)
     testOLS <- fit2()  %>%
       filter(horizon == c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7'), method == 'OLS') 
-    MAEOLS <-  round(ie2misc::mae(testOLS$fc, testOLS$actual), digits = 3)
-    RMSEOLS <- round(ie2misc::rmse(testOLS$fc, testOLS$actual), digits = 3)
+    MAEOLS <-  round((mean(abs(testOLS$actual - testOLS$fc))) , digits = 3)
+    RMSEOLS <- round(sqrt(mean((testOLS$actual - testOLS$fc)^2)) , digits = 3)
     tab <- rbind("RMSE" = RMSEOLS,
                  "MAE" = MAEOLS)
     cbind(c('RMSE', 'MAE'), tab)
@@ -568,8 +568,8 @@ shinyServer(function(input, output) {
       return(NULL)
     testETS <- fit2()  %>%
       filter(horizon == c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7'), method == 'ETS') 
-    MAEETS <-  round(ie2misc::mae(testETS$fc, testETS$actual), digits = 3)
-    RMSEETS <- round(ie2misc::rmse(testETS$fc, testETS$actual), digits = 3)
+    MAEOLS <-  round((mean(abs( testETS$actual -  testETS$fc))) , digits = 3)
+    RMSEOLS <- round(sqrt(mean(( testETS$actual -  testETS$fc)^2)) , digits = 3)
     
     tab <- rbind("RMSE" = RMSEETS,
                  "MAE" =  MAEETS)
