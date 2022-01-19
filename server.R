@@ -10,7 +10,6 @@ library(reshape2)
 library(DT)
 library(tidyverse)
 library(lubridate)
-#library(ie2misc)
 library(forecast)
 library(DescTools)
 source('olsfc.single.R', local = TRUE)
@@ -568,8 +567,8 @@ shinyServer(function(input, output) {
       return(NULL)
     testETS <- fit2()  %>%
       filter(horizon == c('h=1', 'h=2', 'h=3', 'h=4', 'h=5', 'h=6', 'h=7'), method == 'ETS') 
-    MAEOLS <-  round((mean(abs( testETS$actual -  testETS$fc))) , digits = 3)
-    RMSEOLS <- round(sqrt(mean(( testETS$actual -  testETS$fc)^2)) , digits = 3)
+    MAEETS <-  round((mean(abs( testETS$actual -  testETS$fc))) , digits = 3)
+    RMSEETS <- round(sqrt(mean(( testETS$actual -  testETS$fc)^2)) , digits = 3)
     
     tab <- rbind("RMSE" = RMSEETS,
                  "MAE" =  MAEETS)
