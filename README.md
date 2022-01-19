@@ -9,4 +9,4 @@ The app screenshot using MOB depth = 3, Prune option = 'AIC' with all the above 
 
 
 Binder 
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/mahsaashouri/Taiwan-COVID-19-Interactive-tool/main?urlpath=rstudio)
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/mahsaashouri/Taiwan-COVID-19-Interactive-tool/main?urlpath=shiny)
