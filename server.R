@@ -154,30 +154,6 @@ shinyServer(function(input, output) {
     MOBtree <- mob( formula, data = dattrain() , fit = linear, control =
                       mob_control(prune = input$Prune,  maxdepth = depth, alpha = 0.01))
   })
-  
-  fitwh <- reactive({
-    if (is.null(datawhole()))
-      return(NULL)
-    var <- input$SplitVariables
-    var1 <- as.vector(unlist(var))
-    form <- "Confirmed.std ~ trend +  season"
-    for (i in 1:values$frequency)
-      form <- paste(form , " + ", paste("Lag", i, sep = '.'))
-    form <- paste(form , '|')
-    for (i in 1:(length(var1)-1))
-      form <- paste0(form, var1[i], " + ")
-    form <- paste0(form, var1[length(var1)])
-    formula <- as.formula(form)
-    ### defining fit function
-    linear <- function(y, x, start = NULL, weights = NULL, offset = NULL, ...) {
-      glm(y ~ 0 + x, family = gaussian, start = start, ...)
-    }
-    depth <- input$Depth
-    ## running MOB tree
-    MOBtree <- mob( formula, data = datawhole() , fit = linear, control =
-                      mob_control(prune = input$Prune,  maxdepth = depth, alpha = 0.01))
-  })
-  
   #  forecasting models - training
   fit2 <- reactive({
     ## number of validation set 
@@ -265,7 +241,13 @@ shinyServer(function(input, output) {
     h1 <- 7
     if (is.null(datawhole()))
       return(NULL)
-    whole.cluster <- split(na.omit(datawhole()), predict(fitwh(), type = "node"))
+    train.cluster <- split(na.omit(dattrain()), predict(fit(), type = "node"))
+    whole.cluster <- list()
+    for(i in 1:length(train.cluster)){
+      whole.cluster[[i]] <- datawhole() %>%
+        filter(city %in% train.cluster[[i]]$city)%>%
+        na.omit()
+    }
     form <- "Confirmed.std ~ trend + season"
     for (i in 1:values$frequency)
       form <- paste(form , " + ", paste("Lag", i, sep = '.'))
