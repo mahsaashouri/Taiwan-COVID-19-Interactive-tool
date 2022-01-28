@@ -334,7 +334,8 @@ shinyServer(function(input, output) {
     }
     ## reordering series based on the series values
     order.data <- function(df) {
-      new_matrix <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (values$serieslength - values$frequency - h1), ncol = length(unique(df$city)))))
+      new_matrix <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), 
+                                           nrow = (values$serieslength - values$frequency - h1), ncol = length(unique(df$city)))))
       new_matrix <- cbind.data.frame("ID" = paste('s', 1:nrow(new_matrix), sep = ''), new_matrix)
       colnames(new_matrix) <- c("ID", paste('t', 1:(values$serieslength - values$frequency - h1), sep = ''))
       new_matrix.melt <-reshape2:: melt(new_matrix)
@@ -405,53 +406,62 @@ shinyServer(function(input, output) {
     for(i in 1: length(split.confirmed.Taiwan.train)){
       split.confirmed.Taiwan.train[[i]]$cluster <-  i
     }
+    
     order.day <- function(df){
-      m.day <- as.data.frame(t(matrix((df$cases - min(df$cases))/(max(df$cases - min(df$cases))), nrow = (values$serieslength - values$frequency - h1),
-                                      ncol =  length(unique(df$city)))))
-      colnames(m.day) <- c(rep(c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed', 'Thu'), (values$serieslength - (2*values$frequency) - h1)/values$frequency), c('Fri' ,'Sat', 'Sun' ,'Mon' ,'Tue', 'Wed'))
-      m.day2 <-  split.default(m.day, names(m.day))
-      m.day3 <- cbind.data.frame(m.day2$Mon, m.day2$Tue, m.day2$Wed, m.day2$Thu, m.day2$Fri, m.day2$Sat, m.day2$Sun)
-      return(reshape2::melt(t(m.day3)))
+      
+      test <- df %>%
+          mutate('case1' = (df$cases - min(df$cases))/(max(df$cases - min(df$cases)))) %>%
+          mutate('date' = lubridate::ymd(Date))%>%
+          mutate('times' = weekdays(date)) %>%
+          group_by(city) %>%
+          arrange(factor(times))
+
+        test1 <- test %>%
+        arrange(city)
+      
+      split1 <- split(test1, test1$city, drop = TRUE) 
+      
+      for(i in 1:length(split1)){
+        split1[[i]] <- split1[[i]] %>%
+          mutate('times2' = make.unique(times, sep = '_'))
+      }
+      
+      test2 <- do.call(rbind.data.frame, split1)
+      return(test2)
     }
+    
     ordar.day.confirmed <- lapply(split.confirmed.Taiwan.train, order.day)
-    sort.dat.row <- function(df){
-      new_matrix <- as.data.frame(t(matrix(df$value, nrow = (values$serieslength - values$frequency -  h1 - 1), ncol = nrow(df)/(values$serieslength - values$frequency - h1 - 1))))
-      colnames(new_matrix) <- unique(df$Var1)
+    
+    sort.dat.row <- function(df) {
+      new_matrix <- as.data.frame(t(matrix(df$case1 , nrow = (values$serieslength - values$frequency - h1 ), ncol = nrow(df)/(values$serieslength - values$frequency - h1))))
+      colnames(new_matrix) <- unique(df$times2)
       new_matrix <- cbind.data.frame("ID" = paste('s', 1:nrow(new_matrix), sep = ''), new_matrix)
       new_matrix.melt <-reshape2:: melt(new_matrix)
-      order <- dplyr::arrange(new_matrix, paste('Fri', paste('Fri', 1:(values$serieslength - (2*values$frequency) - h1)/values$frequency, collapse = ','),  collapse = ','),
-                              paste('Sat', paste('Sat', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
-                              paste('Sun', paste('Sun', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
-                              paste('Mon', paste('Mon', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
-                              paste('Tue', paste('Tue', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
-                              paste('Wed', paste('Wed', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','),
-                              paste('Thu', paste('Thu', 1:(values$serieslength - (2*values$frequency) - 1)/values$frequency, collapse = ','),  collapse = ','))
-      new_matrix.melt$ID <- factor(new_matrix.melt$ID, levels = order$ID, labels = order$ID)
+      order <- dplyr::arrange(new_matrix, paste(colnames(new_matrix), collapse=",") )
+      new_matrix.melt$ID <- factor(new_matrix.melt$ID, levels = order$ID, labels = order$ID) 
       return(new_matrix.melt)
     }
+    
     order.day.confirmed.Taiwan.train <- lapply(ordar.day.confirmed, sort.dat.row)
     order.day.confirmed.Taiwan.train <- rev(order.day.confirmed.Taiwan.train)
+
     for(i in 1: length(order.day.confirmed.Taiwan.train)){
-      order.day.confirmed.Taiwan.train[[i]]$cluster <- i
-    }
-    final.order.day.confirmed.Taiwan.train <- do.call("rbind", order.day.confirmed.Taiwan.train)
-    
-    heatmap.plot2 <- ggplot(final.order.day.confirmed.Taiwan.train , aes(y = ID, x = variable)) +
-      geom_tile(aes(fill = value)) +
-      #geom_raster() +
+         order.day.confirmed.Taiwan.train[[i]]$cluster <- i
+       }
+       final.order.day.confirmed.Taiwan.train <- do.call("rbind", order.day.confirmed.Taiwan.train) %>%
+         mutate('times' = sub("_.*", "", variable) )
+      heatmap.plot2 <- ggplot(final.order.day.confirmed.Taiwan.train ,
+                            aes(y = ID, x = variable, fill = value)) +
+      geom_raster() +
       facet_grid(final.order.day.confirmed.Taiwan.train$cluster~., scales="free_y", space = "free") +
       scale_fill_gradientn(colours=c("white", "green", "darkgreen", "pink", "red", "darkred"),
-                           values= scales::rescale(c(0, 0.2, 0.4, 0.6, 0.8, 1)), guide="colorbar") +
-      #scale_fill_gradient2(high = "red",  low = "darkgreen", guide="colorbar") +
-      scale_x_discrete(labels = as.character(c(rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency - 10), 'Fri', rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Sat',
-                                               rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Sun', rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Mon',
-                                               rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Tue', rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Wed',
-                                               rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency), 'Thu', rep('', (values$serieslength - (2*values$frequency) - 1)/values$frequency - 5)))) +
+                                                   values= scales::rescale(c(0, 0.2, 0.4, 0.6, 0.8, 1)), guide="colorbar") +
+      scale_x_discrete("ID", labels = as.character(final.order.day.confirmed.Taiwan.train$times), breaks = final.order.day.confirmed.Taiwan.train$times) +
       theme_test()+
-      theme(legend.position = "bottom", text  = element_text(size = 15),
+      theme(legend.position = "bottom", text  = element_text(size = 20),
             panel.spacing = unit(0.1, "lines"),
             axis.title.x = element_blank(), axis.ticks=element_blank(), axis.text.y=element_blank(),
-            axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size = 15),
+            axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size = 20), 
             axis.title.y = element_blank())
     if ( input$Depth == 1 ){
       plot(heatmap.plot2)
